@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: LicenseRef-KoalaFix-Feeders
+# Copyright 2026 KoalaFix PTY LTD and the Kalibrate contributors
+#
+# The KoalaFix feeders as one Azure Pipelines step template: runs one feeder bin from @koalafix/feeders, the Azure
+# Pipelines twin of the GitHub Action in ../../action. Steps run with bash, so the agent needs bash (Linux, macOS, or
+# Windows with Git Bash). An unlinked variable group leaves a secret's reference as the literal text $(NAME), so
+# each step stops with exit 2 when a mapped secret is only that text, rather than sending it and getting a 401.
+parameters:
+  - name: feeder
+    displayName: Which feeder runs
+    type: string
+    values: [azure-release, npm-version, pypi-version, http-probe, image-tag]
+  - name: token
+    displayName: The name of the secret variable that holds the feeder token. Never the token itself.
+    type: string
+    default: KOALAFIX_FEEDER_TOKEN
+  - name: serverUrl
+    displayName: The KoalaFix server's address
+    type: string
+    default: https://mcp.koalafix.com
+  - name: space
+    displayName: The space the key belongs to
+    type: string
+  - name: key
+    displayName: The key to write, lower-case subject.fact, for example release.latest
+    type: string
+  - name: package
+    displayName: npm-version and pypi-version only. The npm package or PyPI project whose latest version is written
+    type: string
+    default: ""
+  - name: url
+    displayName: http-probe only. The address the probe requests with GET
+    type: string
+    default: ""
+  - name: expectStatus
+    displayName: http-probe only. The status that counts as up
+    type: string
+    default: "200"
+  - name: expectBody
+    displayName: http-probe only. A regular expression the first 1 MiB of the body must match to count as up
+    type: string
+    default: ""
+  - name: interval
+    displayName: http-probe only. Seconds between runs; runs inside one interval are one event. Match the schedule
+    type: string
+    default: "60"
+  - name: image
+    displayName: image-tag only. The image tag whose digest is written, registry/name:tag, for example ghcr.io/owner/app:v1.4.0
+    type: string
+    default: ""
+  - name: registryUsername
+    displayName: image-tag only. The registry user, for a private image
+    type: string
+    default: ""
+  - name: registryPassword
+    displayName: image-tag only. The name of the secret variable that holds the registry password or token. Never the password itself
+    type: string
+    default: ""
+  - name: feedersVersion
+    displayName: The @koalafix/feeders version npx runs. Pin one in your own pipeline
+    type: string
+    # scripts/sync-azure-pipelines.mjs puts the package's version here, so a template tag runs the feeders it was cut from.
+    default: 1.0.0
+  - name: installNode
+    displayName: Install Node with UseNode. Turn off on an agent that already has Node 24 and no route to the download
+    type: boolean
+    default: true
+
+steps:
+  - ${{ if parameters.installNode }}:
+      - task: UseNode@1
+        displayName: Use Node 24
+        inputs:
+          version: 24.x
+
+  # The release of the tag the run is for. Azure Pipelines gives a step no release event, so this writes a release
+  # object from the run's predefined variables for the feeder's --event flag. Azure has no release time or
+  # prerelease flag: the pipeline's start stands for the first, and a SemVer pre-release tag (a hyphen after the
+  # version, v2.0.0-rc.1) for the second. The event key names the commit and the tag, so a re-run of the same tag
+  # is a replay. A run that is not for a tag exits 2 and sends nothing.
+  - ${{ if eq(parameters.feeder, 'azure-release') }}:
+      - bash: |
+          set -eu
+          node -e '
+            const e = process.env;
+            const tag = e.BUILD_SOURCEBRANCH.startsWith("refs/tags/") ? e.BUILD_SOURCEBRANCH.slice(10) : "";
+            if (tag === "") { console.error("koalafix: not a tag run: Build.SourceBranch is " + e.BUILD_SOURCEBRANCH); process.exit(2); }
+            // A start time with no offset is UTC, as Azure DevOps keeps it; without the Z, Node reads it in the agent time zone.
+            const raw = (e.SYSTEM_PIPELINESTARTTIME || "").trim().replace(" ", "T");
+            const started = new Date(raw === "" || /T.*(?:Z|[+-]\d\d(?::?\d\d)?)$/i.test(raw) ? raw : raw + "Z");
+            require("fs").writeFileSync(e.RELEASE_FILE, JSON.stringify({
+              repository: { full_name: e.SYSTEM_TEAMPROJECT.replace(/[\/\s]+/g, "-") + "/" + e.BUILD_REPOSITORY_NAME.replace(/[\/\s]+/g, "-") },
+              release: {
+                id: e.BUILD_SOURCEVERSION,
+                tag_name: tag,
+                html_url: e.SYSTEM_COLLECTIONURI + encodeURIComponent(e.SYSTEM_TEAMPROJECT) + "/_build/results?buildId=" + e.BUILD_BUILDID,
+                prerelease: /^v?\d+\.\d+\.\d+-/i.test(tag),
+                published_at: (Number.isNaN(started.getTime()) ? new Date() : started).toISOString(),
+              },
+            }));
+          '
+        displayName: KoalaFix release event
+        env:
+          RELEASE_FILE: $(Agent.TempDirectory)/koalafix-release.json
+
+
+  # One step per feeder, each with only its own inputs. The values reach the script as environment variables and are
+  # quoted there, so no input is ever pasted into a script line. `--flag=value`, so a value that starts with a dash is
+  # never read as a flag; an empty expect-body passes no flag at all.
+  - ${{ if eq(parameters.feeder, 'azure-release') }}:
+      - bash: |
+          set -eu
+          case "${KALIBRATE_FEEDER_TOKEN:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable the token parameter names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          unset KALIBRATE_ALLOW_INSECURE_HTTP
+          npx --yes --package="@koalafix/feeders@$KOALAFIX_FEEDERS_VERSION" -- kalibrate-feed-github-release --key="$KOALAFIX_KEY" --event="$RELEASE_FILE"
+        displayName: KoalaFix feeder ${{ parameters.key }}
+        env:
+          # A secret variable reaches a step only when it is mapped here. The token is never in a script line or on a
+          # command line, and Azure Pipelines masks its value in the log.
+          KALIBRATE_FEEDER_TOKEN: $(${{ parameters.token }})
+          KALIBRATE_URL: ${{ parameters.serverUrl }}
+          KALIBRATE_SPACE: ${{ parameters.space }}
+          KOALAFIX_FEEDERS_VERSION: ${{ parameters.feedersVersion }}
+          KOALAFIX_KEY: ${{ parameters.key }}
+          RELEASE_FILE: $(Agent.TempDirectory)/koalafix-release.json
+
+  - ${{ if eq(parameters.feeder, 'npm-version') }}:
+      - bash: |
+          set -eu
+          case "${KALIBRATE_FEEDER_TOKEN:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable the token parameter names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          unset KALIBRATE_ALLOW_INSECURE_HTTP
+          npx --yes --package="@koalafix/feeders@$KOALAFIX_FEEDERS_VERSION" -- kalibrate-feed-npm-version --key="$KOALAFIX_KEY" --package="$KOALAFIX_PACKAGE"
+        displayName: KoalaFix feeder ${{ parameters.key }}
+        env:
+          KALIBRATE_FEEDER_TOKEN: $(${{ parameters.token }})
+          KALIBRATE_URL: ${{ parameters.serverUrl }}
+          KALIBRATE_SPACE: ${{ parameters.space }}
+          KOALAFIX_FEEDERS_VERSION: ${{ parameters.feedersVersion }}
+          KOALAFIX_KEY: ${{ parameters.key }}
+          KOALAFIX_PACKAGE: ${{ parameters.package }}
+
+  - ${{ if eq(parameters.feeder, 'pypi-version') }}:
+      - bash: |
+          set -eu
+          case "${KALIBRATE_FEEDER_TOKEN:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable the token parameter names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          unset KALIBRATE_ALLOW_INSECURE_HTTP
+          npx --yes --package="@koalafix/feeders@$KOALAFIX_FEEDERS_VERSION" -- kalibrate-feed-pypi-version --key="$KOALAFIX_KEY" --package="$KOALAFIX_PACKAGE"
+        displayName: KoalaFix feeder ${{ parameters.key }}
+        env:
+          KALIBRATE_FEEDER_TOKEN: $(${{ parameters.token }})
+          KALIBRATE_URL: ${{ parameters.serverUrl }}
+          KALIBRATE_SPACE: ${{ parameters.space }}
+          KOALAFIX_FEEDERS_VERSION: ${{ parameters.feedersVersion }}
+          KOALAFIX_KEY: ${{ parameters.key }}
+          KOALAFIX_PACKAGE: ${{ parameters.package }}
+
+  - ${{ if eq(parameters.feeder, 'http-probe') }}:
+      - bash: |
+          set -eu
+          case "${KALIBRATE_FEEDER_TOKEN:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable the token parameter names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          unset KALIBRATE_ALLOW_INSECURE_HTTP
+          npx --yes --package="@koalafix/feeders@$KOALAFIX_FEEDERS_VERSION" -- kalibrate-feed-http-probe --key="$KOALAFIX_KEY" --url="$KOALAFIX_PROBE_URL" --expect-status="$KOALAFIX_EXPECT_STATUS" --interval="$KOALAFIX_INTERVAL" ${KOALAFIX_EXPECT_BODY:+"--expect-body=$KOALAFIX_EXPECT_BODY"}
+        displayName: KoalaFix feeder ${{ parameters.key }}
+        env:
+          KALIBRATE_FEEDER_TOKEN: $(${{ parameters.token }})
+          KALIBRATE_URL: ${{ parameters.serverUrl }}
+          KALIBRATE_SPACE: ${{ parameters.space }}
+          KOALAFIX_FEEDERS_VERSION: ${{ parameters.feedersVersion }}
+          KOALAFIX_KEY: ${{ parameters.key }}
+          KOALAFIX_PROBE_URL: ${{ parameters.url }}
+          KOALAFIX_EXPECT_STATUS: ${{ parameters.expectStatus }}
+          KOALAFIX_EXPECT_BODY: ${{ parameters.expectBody }}
+          KOALAFIX_INTERVAL: ${{ parameters.interval }}
+
+  # A private image's registry password stays in the secret variable registryPassword names; the step maps it only
+  # when one is named, and the feeder reads it from the variable --password-env names, never a command-line value.
+  - ${{ if eq(parameters.feeder, 'image-tag') }}:
+      - bash: |
+          set -eu
+          case "${KALIBRATE_FEEDER_TOKEN:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable the token parameter names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          unset KALIBRATE_ALLOW_INSECURE_HTTP
+          set --
+          case "${KALIBRATE_REGISTRY_PASSWORD:-}" in \$\(*\)) printf '%s\n' "koalafix: the secret variable registryPassword names has no value; link its variable group to the pipeline and let the pipeline use it" >&2; exit 2 ;; esac
+          if [ -n "$KOALAFIX_REGISTRY_USERNAME" ] && [ -n "${KALIBRATE_REGISTRY_PASSWORD:-}" ]; then
+            set -- "--username=$KOALAFIX_REGISTRY_USERNAME" --password-env=KALIBRATE_REGISTRY_PASSWORD
+          elif [ -n "$KOALAFIX_REGISTRY_USERNAME${KALIBRATE_REGISTRY_PASSWORD:-}" ]; then
+            printf '%s\n' "koalafix: registryUsername and registryPassword go together" >&2
+            exit 2
+          fi
+          npx --yes --package="@koalafix/feeders@$KOALAFIX_FEEDERS_VERSION" -- kalibrate-feed-image-tag --key="$KOALAFIX_KEY" --image="$KOALAFIX_IMAGE" "$@"
+        displayName: KoalaFix feeder ${{ parameters.key }}
+        env:
+          KALIBRATE_FEEDER_TOKEN: $(${{ parameters.token }})
+          KALIBRATE_URL: ${{ parameters.serverUrl }}
+          KALIBRATE_SPACE: ${{ parameters.space }}
+          KOALAFIX_FEEDERS_VERSION: ${{ parameters.feedersVersion }}
+          KOALAFIX_KEY: ${{ parameters.key }}
+          KOALAFIX_IMAGE: ${{ parameters.image }}
+          KOALAFIX_REGISTRY_USERNAME: ${{ parameters.registryUsername }}
+          ${{ if ne(parameters.registryPassword, '') }}:
+            KALIBRATE_REGISTRY_PASSWORD: $(${{ parameters.registryPassword }})

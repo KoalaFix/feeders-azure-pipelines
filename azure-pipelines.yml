@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: LicenseRef-KoalaFix-Feeders
+# Copyright 2026 KoalaFix PTY LTD and the Kalibrate contributors
+#
+# An example pipeline: the release of a tag, and a probe of a service only your network can reach. Copy it into the
+# repository that owns the release. See README.md for the repository resource and the variable group.
+
+# The pipeline runs for tags and on a schedule; each job's condition picks the runs it is for.
+trigger:
+  branches:
+    exclude: ["*"]
+  tags:
+    include: ["v*"]
+pr: none
+schedules:
+  - cron: "*/15 * * * *"
+    displayName: Probe every 15 minutes
+    branches:
+      include: [main]
+    always: true
+
+resources:
+  repositories:
+    - repository: koalafix
+      type: github
+      name: koalafix/feeders-azure-pipelines
+      ref: refs/tags/v1
+      endpoint: your-github-service-connection
+
+variables:
+  - group: koalafix-feeder # holds KOALAFIX_FEEDER_TOKEN as a secret
+
+jobs:
+  - job: release
+    displayName: Write the release
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: none
+      - template: steps/feeder.yml@koalafix
+        parameters:
+          feeder: azure-release
+          space: your-space
+          key: release.latest
+
+  - job: probe
+    displayName: Probe the billing service
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'Schedule'))
+    pool:
+      name: internal # a self-hosted pool whose agents can reach the address
+    steps:
+      - checkout: none
+      - template: steps/feeder.yml@koalafix
+        parameters:
+          feeder: http-probe
+          space: your-space
+          key: billing.health
+          url: http://billing.internal/healthz
+          expectStatus: "200"
+          interval: "900"
