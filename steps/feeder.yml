@@ -2,7 +2,7 @@
 # Copyright 2026 KoalaFix PTY LTD and the Kalibrate contributors
 #
 # The KoalaFix feeders as one Azure Pipelines step template: runs one feeder bin from @koalafix/feeders, the Azure
-# Pipelines twin of the GitHub Action in ../../action. Steps run with bash, so the agent needs bash (Linux, macOS, or
+# Pipelines twin of the KoalaFix GitHub Action. Steps run with bash, so the agent needs bash (Linux, macOS, or
 # Windows with Git Bash). An unlinked variable group leaves a secret's reference as the literal text $(NAME), so
 # each step stops with exit 2 when a mapped secret is only that text, rather than sending it and getting a 401.
 parameters:
@@ -59,7 +59,7 @@ parameters:
   - name: feedersVersion
     displayName: The @koalafix/feeders version npx runs. Pin one in your own pipeline
     type: string
-    # scripts/sync-azure-pipelines.mjs puts the package's version here, so a template tag runs the feeders it was cut from.
+    # The feeders version this template tag was cut from, so a tag always runs the same feeders.
     default: 1.0.0
   - name: installNode
     displayName: Install Node with UseNode. Turn off on an agent that already has Node 24 and no route to the download

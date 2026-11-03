@@ -5,9 +5,6 @@ builds, the version npm or PyPI serves as latest, the digest an image tag points
 only your network can reach. Agents then read a fact that says who checked it and when. The template runs the feeders from the `@koalafix/feeders` npm package,
 the same ones the KoalaFix GitHub Action runs.
 
-This is a YAML step template in a public repository, the lighter route. A Marketplace task is a later step (see the
-last section).
-
 ## Before the first run
 
 1. A space with the key registered in it, for example `release.latest`, with a freshness window longer than the gap
@@ -165,19 +162,3 @@ every run: npx fetches the feeders each time.
 | 1 | KoalaFix refused the request or could not be reached, or the feeder could not read its source |
 | 2 | an input is missing or wrong, a secret's variable group is not linked, or the release step ran outside a tag run; nothing was sent |
 | 3 | KoalaFix took the request but refused the fact; the log says which key and why |
-
-## Marketplace task later
-
-A Marketplace extension would add a task (`KoalaFixFeeder@1`) in place of the template reference:
-
-- Inputs in the pipeline editor's task assistant, with the token as a typed secret or a service connection, so it
-  needs no `env:` mapping and no variable name.
-- The release built in the task itself, so no bash and no inline script; it would also run on Windows agents without
-  Git Bash.
-- A version the publisher pins and Microsoft's marketplace scanning, in place of `ref: refs/tags/v1` and
-  `feedersVersion`.
-
-It costs a publisher account, an extension manifest (`vss-extension.json`), a task folder with `task.json`, a
-bundled Node task runner kept up to date with the agent's Node, and a review for each public version. The template
-needs none of that, and the same parameters would carry over as the task's inputs. Build the task when
-customers ask for the task assistant or a service connection.
