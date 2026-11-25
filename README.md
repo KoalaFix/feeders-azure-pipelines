@@ -36,6 +36,9 @@ anything. To check a copy of this folder inside your own repository, reference i
 
 ## Use it
 
+Azure Pipelines cannot pin a repository resource to a commit, so keep the tag. The tag is protected by a ruleset in this
+repository and cannot be moved or deleted.
+
 ```yaml
 resources:
   repositories:
